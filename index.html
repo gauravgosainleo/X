@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Live Audio Transcription</title>
+  <style>
+    body { font-family: Arial,sans-serif; padding:20px }
+    button { margin:0 5px }
+    #transcript {
+      border:1px solid #ccc; padding:10px;
+      white-space: pre-wrap; height:200px; overflow:auto;
+    }
+  </style>
+</head>
+<body>
+  <h1>Live Audio Transcription</h1>
+  <label>
+    Mode:
+    <select id="mode">
+      <option value="both">Mic & System</option>
+      <option value="mic">Mic only</option>
+      <option value="system">System only</option>
+    </select>
+  </label>
+  <br><br>
+  <button id="start">Start</button>
+  <button id="stop" disabled>Stop</button>
+  <p><strong>Status:</strong> <span id="status">Idle</span></p>
+  <h2>Transcript</h2>
+  <div id="transcript"></div>
+
+  <script>
+    const API_URL = 'YOUR_WEB_APP_URL';  // ← set this!
+    let recorder, chunks = [];
+
+    document.getElementById('start').onclick = async () => {
+      chunks = [];
+      document.getElementById('transcript').textContent = '';
+      const mode = document.getElementById('mode').value;
+      const streams = [];
+
+      // 1️⃣ mic?
+      if (mode==='mic' || mode==='both') {
+        try {
+          const mic = await navigator.mediaDevices.getUserMedia({ audio:true });
+          streams.push(mic);
+        } catch(err) {
+          alert('Mic error: ' + err.message);
+          return;
+        }
+      }
+
+      // 2️⃣ system via tab-share?
+      if (mode==='system' || mode==='both') {
+        try {
+          // must share a **tab** in Chrome and check “Share audio”
+          const disp = await navigator.mediaDevices.getDisplayMedia({
+            video:true, audio:true
+          });
+          // if no audio track → user didn’t share audio
+          if (disp.getAudioTracks().length===0) {
+            disp.getTracks().forEach(t=>t.stop());
+            alert('No system audio. Share a Chrome TAB and check “Share audio.”');
+            return;
+          }
+          disp.getVideoTracks().forEach(t=>t.stop());
+          streams.push(disp);
+        } catch(err) {
+          alert('System audio capture failed: ' + err.message);
+          return;
+        }
+      }
+
+      if (streams.length===0) {
+        alert('No audio sources available.');
+        return;
+      }
+
+      // 3️⃣ merge
+      const tracks = [];
+      streams.forEach(s=> s.getAudioTracks().forEach(t=> tracks.push(t)));
+      const combined = new MediaStream(tracks);
+
+      // 4️⃣ record
+      recorder = new MediaRecorder(combined);
+      recorder.start(2000);  // send data every 2s
+
+      recorder.onstart = () => {
+        document.getElementById('status').textContent = 'Recording…';
+        document.getElementById('start').disabled = true;
+        document.getElementById('stop').disabled  = false;
+      };
+
+      recorder.ondataavailable = async e => {
+        if (!e.data.size) return;
+        chunks.push(e.data);
+        const blob = new Blob(chunks, { type: recorder.mimeType });
+        const b64  = await blobToBase64(blob);
+
+        // call Apps Script endpoint
+        const resp = await fetch(API_URL, {
+          method:'POST',
+          headers:{ 'Content-Type':'application/json' },
+          body: JSON.stringify({ base64Data: b64, mimeType: blob.type })
+        });
+        const json = await resp.json();
+        document.getElementById('transcript').textContent = json.text;
+      };
+
+      recorder.onstop = () => {
+        document.getElementById('status').textContent = 'Stopped';
+        document.getElementById('start').disabled = false;
+        document.getElementById('stop').disabled  = true;
+      };
+    };
+
+    document.getElementById('stop').onclick = () => recorder.stop();
+
+    function blobToBase64(blob) {
+      return new Promise((res, rej) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          // strip off "data:…;base64," prefix
+          res(reader.result.split(',')[1]);
+        };
+        reader.onerror = rej;
+        reader.readAsDataURL(blob);
+      });
+    }
+  </script>
+</body>
+</html>
